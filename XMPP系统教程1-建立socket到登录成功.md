@@ -43,7 +43,7 @@
 	<stream:stream to="192.168.1.115" xmlns="jabber:client"
         xmlns:stream="http://etherx.jabber.org/streams" version="1.0">
         
-#### 7. 服务器通知客户端可用的验证机制: 
+#### 7. 服务器通知客户端可用的验证机制(到这一步为止, 表明加密的socket已经建立成功): 
 
 	<?xml version='1.0' encoding='UTF-8'?>
 	<stream:stream xmlns:stream="http://etherx.jabber.org/streams" xmlns="jabber:client"
