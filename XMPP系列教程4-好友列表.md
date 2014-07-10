@@ -1,6 +1,9 @@
 # XMPP获取好友列表
 
-## 报文格式
+本篇文章主要是介绍如何获取好友列表, 包括客户端的请求和服务器返回的数据.
+关于XMPP的好友协议, 可以参考[RFC3921](http://wiki.jabbercn.org/RFC3921)
+
+## 获取好友列表报文格式
 
 ### 发送的报文
 
@@ -77,6 +80,9 @@ XMPPRoster类继承自XMPPModule，主要用于处理Roster相关的网络请求
 	//设置xmppStream, 并将 _xmppRoster添加到 _xmppStream 的广播中
     [_xmppRoster activate:_xmppStream];
     
+    //将 self 添加到广播队列中
+    [_xmppRoster addDelegate:self delegateQueue:_xmppQueue]
+    
 至此, XMPPRoster 对象初始化完成
 
 ### XMPPRoster如何自动获取好友列表?
@@ -112,7 +118,14 @@ XMPPStream 登录成功后, 会发送 xmppStreamDidAuthenticate 广播, XMPPRost
 		...
 	}
 
-上面的代码, 其实只是构造了如下的一个XML报文发送出去到服务器(注意看这里的xmlns是 jabber:iq:roster):
+上面的代码, 添加了一个element到 xmppIDTracker对象中, 用于处理请求超时以及服务器正常返回数据时的操作, 如下代码:
+
+	[xmppIDTracker addElement:iq
+					   target:self
+                    selector:@selector(handleFetchRosterQueryIQ:withInfo:)
+                     timeout:60];
+                          
+同时构造了如下的一个XML报文发送出去到服务器(注意看这里的xmlns是 jabber:iq:roster):
 
 	<iq id="5nKV7-6" type="get"><query xmlns="jabber:iq:roster"></query></iq>
 	
@@ -152,8 +165,88 @@ XMPPRoster解析报文(从服务器返回的报文能看出来，服务器返回
 		return NO;
 	}
 	
-从服务器返回的报文来看, XMPPRoster应该会走如下方法:
+服务器返回roster列表时, 执行了 [xmppIDTracker invokeForElement:iq withObject:iq]; 方法, 根据上一节XMPPIDTracker的介绍, 该方法会调用 handleFetchRosterQueryIQ:withInfo: 方法, 如下:
 
-	[xmppIDTracker invokeForElement:iq withObject:iq];
+	- (void)handleFetchRosterQueryIQ:(XMPPIQ *)iq withInfo:(XMPPBasicTrackingInfo *)basicTrackingInfo{
+    
+	    dispatch_block_t block = ^{ @autoreleasepool {
+	        
+	        NSXMLElement *query = [iq elementForName:@"query" xmlns:@"jabber:iq:roster"];
+	        
+			BOOL hasRoster = [self hasRoster];
+			
+			//如果之前未获取过好友列表, 则发送的广播
+			if (!hasRoster)
+			{
+	            [xmppRosterStorage clearAllUsersAndResourcesForXMPPStream:xmppStream];
+	            [self _setPopulatingRoster:YES];
+	            
+	            //发送一个 xmppRosterDidBeginPopulating 广播
+	            [multicastDelegate xmppRosterDidBeginPopulating:self];
+				[xmppRosterStorage beginRosterPopulationForXMPPStream:xmppStream];
+			}
+			
+			NSArray *items = [query elementsForName:@"item"];
+	        [self _addRosterItems:items];
+			
+			if (!hasRoster)
+			{
+				// We should have our roster now
+				
+				[self _setHasRoster:YES];
+	            [self _setPopulatingRoster:NO];
+	            [multicastDelegate xmppRosterDidEndPopulating:self];
+				[xmppRosterStorage endRosterPopulationForXMPPStream:xmppStream];
+				
+				// Process any premature presence elements we received.
+				
+				for (XMPPPresence *presence in earlyPresenceElements)
+				{
+					[self xmppStream:xmppStream didReceivePresence:presence];
+				}
+	            
+				[earlyPresenceElements removeAllObjects];
+			}
+	        
+	    }};
+		
+		if (dispatch_get_specific(moduleQueueTag))
+			block();
+		else
+			dispatch_async(moduleQueue, block);
+	    
+	}
+
+### 监听Roster获取完成时的回调
+
+/**
+ * Sent when the initial roster is received.<br/>
+ * 当roster开始往 storage(coreData 或者 memory) 添加数据时的回调
+**/
+
+	- (void)xmppRosterDidBeginPopulating:(XMPPRoster *)sender;
+
+/**
+ * Sent when the initial roster has been populated into storage.<br/>
+ * 当roster往 storage(coreData 或者 memory) 添加数据完成后的回调
+**/
+
+	- (void)xmppRosterDidEndPopulating:(XMPPRoster *)sender;
+
+/**
+ * Sent when the roster receives a roster item.<br/>
+ * 在 发送 xmppRosterDidBeginPopulating 广播后, 会陆续收到didReceiveRosterItem 的回调<br/>
+ * 在 发送 xmppRosterDidEndPopulating 广播后, 表示roster列表遍历完成
+**/
+
+	- (void)xmppRoster:(XMPPRoster *)sender didReceiveRosterItem:(NSXMLElement *)item;
 	
-### 
+监听以上三个方法, 可以完成基本的好友获取操作, 使用 XMPPRosterMemoryStorage 类的回调则可以监听到更多的回调, 可以自己参照代码进行查看.
+好友列表完成时的回调方法如下:
+
+	- (void)xmppRosterDidPopulate:(XMPPRosterMemoryStorage *)sender{
+		//通过 sortedUsersByName 方法可以从 memory对象中获取roster列表
+		NSArray *roster = [sender sortedUsersByName];
+	}
+	
+**其它回调方法, 比如: 删除好友、添加好友、接收到好友请求等操作，将会慢慢道来**
